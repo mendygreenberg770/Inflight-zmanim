@@ -17,6 +17,13 @@ occur given the takeoff bucket and normal speed variations (±6% flight time).
 Use the more stringent end for the given halachic application. Zmanim in gray
 occurred in only some scenarios and may not occur on your flight.
 
+### 🎯 Exact Takeoff
+Once you know the exact takeoff time (e.g. the wheels left the ground at 6:42),
+enter it and get a single best-estimate time for every zman during the flight —
+no wide ranges. Each zman also shows the elapsed time after takeoff (`T+2h 14m`)
+so you can follow along on the aircraft clock, plus a small ±6%-speed window;
+use the more stringent end l'chumra.
+
 ### 🛰 Live Tracking
 Enter a flight number (e.g. `UA84`, `LY26`) while the flight is airborne. The
 app pulls the live position, ground speed, and route, then computes the exact

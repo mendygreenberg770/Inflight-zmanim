@@ -2,10 +2,11 @@
 
 import { useState } from "react";
 import ChartTab from "@/components/ChartTab";
+import ExactTab from "@/components/ExactTab";
 import LiveTab from "@/components/LiveTab";
 
 export default function Home() {
-  const [tab, setTab] = useState<"chart" | "live">("chart");
+  const [tab, setTab] = useState<"chart" | "exact" | "live">("chart");
 
   return (
     <main className="mx-auto max-w-[1500px] px-4 py-6">
@@ -15,13 +16,14 @@ export default function Home() {
         </h1>
         <p className="mt-1 text-sm text-gray-600">
           Zmanim for your flight per the Alter Rebbe — tzeis 6° (Baal HaTanya), with the
-          zmanim formulas from the Zmanim project. Build a printable pre-flight chart, or
-          track your flight live.
+          zmanim formulas from the Zmanim project. Build a printable pre-flight chart, get
+          exact times for a known takeoff, or track your flight live.
         </p>
         <nav className="mt-4 flex gap-2 border-b border-gray-200">
           {(
             [
               ["chart", "📋 Pre-Flight Chart"],
+              ["exact", "🎯 Exact Takeoff"],
               ["live", "🛰 Live Tracking"],
             ] as const
           ).map(([key, label]) => (
@@ -43,6 +45,9 @@ export default function Home() {
 
       <div className={tab === "chart" ? "" : "hidden"}>
         <ChartTab />
+      </div>
+      <div className={tab === "exact" ? "" : "hidden"}>
+        <ExactTab />
       </div>
       <div className={tab === "live" ? "" : "hidden"}>
         <LiveTab />

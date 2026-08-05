@@ -235,6 +235,67 @@ export function buildTiles(opts: {
   return tiles;
 }
 
+// ── Exact-takeoff point estimates ────────────────────────────────────────────
+
+export interface ExactCrossing {
+  zman: ZmanKey;
+  /** Best estimate, computed with the nominal flight duration. */
+  nominalMs: number;
+  /** Envelope across ± duration spread. */
+  earliestMs: number;
+  latestMs: number;
+  /** Time into the flight at the nominal estimate. */
+  elapsedMs: number;
+}
+
+/**
+ * Point-estimate zmanim for a single known takeoff time: one nominal time per
+ * zman occurrence, plus a small earliest/latest envelope from fast/slow
+ * flight-duration variants.
+ */
+export function exactCrossings(opts: {
+  from: LatLon;
+  to: LatLon;
+  takeoffMs: number;
+  durationMs: number;
+  durationSpread?: number; // fractional, default ±6%
+  zmanim: ZmanKey[];
+}): ExactCrossing[] {
+  const spread = opts.durationSpread ?? 0.06;
+  const scenario = (durationMs: number): Scenario => ({
+    takeoffMs: opts.takeoffMs,
+    durationMs: Math.round(durationMs),
+    from: opts.from,
+    to: opts.to,
+  });
+
+  const nominal = scenarioCrossings(scenario(opts.durationMs), opts.zmanim);
+  const variants = [
+    scenarioCrossings(scenario(opts.durationMs * (1 - spread)), opts.zmanim),
+    scenarioCrossings(scenario(opts.durationMs * (1 + spread)), opts.zmanim),
+  ];
+
+  const out: ExactCrossing[] = nominal.map((c) => {
+    // Match each nominal occurrence to its counterpart (within 3h) in the
+    // fast/slow variants; a variant may miss the zman entirely near the edges.
+    const near = variants.flatMap((v) =>
+      v
+        .filter((x) => x.zman === c.zman && Math.abs(x.timeMs - c.timeMs) < 3 * 3600_000)
+        .map((x) => x.timeMs)
+    );
+    const all = [c.timeMs, ...near];
+    return {
+      zman: c.zman,
+      nominalMs: c.timeMs,
+      earliestMs: Math.min(...all),
+      latestMs: Math.max(...all),
+      elapsedMs: Math.round(c.progress * opts.durationMs),
+    };
+  });
+  out.sort((a, b) => a.nominalMs - b.nominalMs);
+  return out;
+}
+
 /** Rough airtime estimate from great-circle distance, with a jet-stream east/west bias. */
 export function estimateDurationMs(from: LatLon, to: LatLon): number {
   const km = gcDistanceKm(from, to);
