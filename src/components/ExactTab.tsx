@@ -1,5 +1,6 @@
 "use client";
 
+import { fetchJson } from "@/lib/clientFetch";
 import { useState } from "react";
 import AirportInput from "./AirportInput";
 import FlightLookup, { RouteLookupResult } from "./FlightLookup";
@@ -93,9 +94,7 @@ export default function ExactTab() {
       });
       if (duration) params.set("durationMinutes", duration);
       if (flightIdent) params.set("flight", flightIdent);
-      const res = await fetch(`/api/exact?${params}`);
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error ?? "Request failed");
+      const json = await fetchJson<ExactData>(`/api/exact?${params}`);
       setData(json);
       if (!duration) setDuration(String(Math.round(json.meta.durationMs / 60_000)));
     } catch (err) {

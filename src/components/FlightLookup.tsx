@@ -1,5 +1,6 @@
 "use client";
 
+import { fetchJson } from "@/lib/clientFetch";
 import { useState } from "react";
 import { AIRLINES } from "@/lib/airlines";
 
@@ -41,9 +42,9 @@ export default function FlightLookup({
     setFound(null);
     try {
       const ident = `${airline}${number.trim()}`;
-      const res = await fetch(`/api/route?ident=${encodeURIComponent(ident)}`);
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.message ?? json.error ?? "Lookup failed");
+      const json = await fetchJson<Omit<RouteLookupResult, "ident">>(
+        `/api/route?ident=${encodeURIComponent(ident)}`
+      );
       const result = { ...json, ident };
       setFound(result);
       onRoute(result);
