@@ -1,5 +1,6 @@
 "use client";
 
+import { fetchJson } from "@/lib/clientFetch";
 import { useCallback, useEffect, useRef, useState } from "react";
 import AirportInput from "./AirportInput";
 import { AIRLINES } from "@/lib/airlines";
@@ -97,17 +98,18 @@ export default function LiveTab() {
       } else if (fromRef.current.trim()) {
         params.set("from", fromRef.current.trim());
       }
-      const res = await fetch(`/api/live?${params}`);
-      const json = await res.json();
+      const json = await fetchJson<LiveData & { error?: string; message?: string }>(
+        `/api/live?${params}`
+      );
       if (json.error) {
-        setErr(json);
+        setErr(json as unknown as LiveError);
         setData(null);
       } else {
         setData(json);
         setErr(null);
       }
     } catch (e) {
-      setErr({ error: "network", message: e instanceof Error ? e.message : String(e) });
+      setErr({ error: "server", message: e instanceof Error ? e.message : String(e) });
     } finally {
       setLoading(false);
       setSecondsToRefresh(REFRESH_SECONDS);
