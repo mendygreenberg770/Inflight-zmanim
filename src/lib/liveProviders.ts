@@ -136,7 +136,11 @@ interface Fr24Flight {
 }
 
 const fr24Cache = new Map<string, { data: RouteInfo | null; expires: number }>();
-const FR24_CACHE_TTL_MS = 10 * 60_000;
+// Successful lookups are safe to keep for hours (schedules don't churn), but a
+// failure is usually a transient bot-block — retry quickly instead of letting
+// one blocked request poison the cache and force stale-DB fallbacks.
+const FR24_CACHE_HIT_TTL_MS = 6 * 3600_000;
+const FR24_CACHE_MISS_TTL_MS = 90_000;
 
 export const BROWSER_HEADERS = {
   "User-Agent":
@@ -274,21 +278,73 @@ async function fr24Find(flightNumber: string): Promise<RouteInfo | null> {
 }
 
 /**
+ * Sibling-deployment relay: FlightRadar24 blocks some hosting providers'
+ * egress IPs (e.g. Vercel/AWS) while allowing others (e.g. Cloudflare
+ * Workers). Set ROUTE_LOOKUP_PROXY on the blocked deployment to the base URL
+ * of a working deployment of this same app (e.g. https://xxx.workers.dev) and
+ * route lookups are relayed to its /api/route. `proxied=1` marks relayed
+ * requests so a misconfigured proxy target can never loop.
+ */
+async function fetchRouteViaProxy(flightNumber: string): Promise<RouteInfo | null> {
+  const base = process.env.ROUTE_LOOKUP_PROXY?.replace(/\/+$/, "");
+  if (!base) return null;
+  try {
+    const res = await fetch(
+      `${base}/api/route?ident=${encodeURIComponent(flightNumber)}&proxied=1`,
+      { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS), cache: "no-store" }
+    );
+    if (!res.ok) return null;
+    const j = (await res.json()) as {
+      from?: { iata?: string; icao?: string };
+      to?: { iata?: string; icao?: string };
+      source?: string;
+      scheduledOffMs?: number | null;
+      durationMinutes?: number | null;
+    };
+    if (!j?.from?.iata && !j?.from?.icao) return null;
+    if (!j?.to?.iata && !j?.to?.icao) return null;
+    return {
+      originIata: j.from?.iata,
+      originIcao: j.from?.icao,
+      destIata: j.to?.iata,
+      destIcao: j.to?.icao,
+      source: `${j.source ?? "unknown"} (via proxy)`,
+      scheduledDepMs: j.scheduledOffMs ?? undefined,
+      scheduledArrMs:
+        j.scheduledOffMs && j.durationMinutes
+          ? j.scheduledOffMs + j.durationMinutes * 60_000
+          : undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * FlightRadar24 flight-number lookup: reflects the *current* schedule, so it
  * avoids the stale-route problem of community callsign→route databases
  * (airlines reuse flight numbers on new routes). Tries the list API first,
- * then the search API.
+ * then the search API, then the sibling-deployment relay (if configured).
  */
-export async function fetchRouteFr24(flightInput: string): Promise<RouteInfo | null> {
+export async function fetchRouteFr24(
+  flightInput: string,
+  opts?: { noProxy?: boolean }
+): Promise<RouteInfo | null> {
   const flightNumber = toIataFlightNumber(flightInput);
   if (!flightNumber) return null;
 
   const cached = fr24Cache.get(flightNumber);
   if (cached && cached.expires > Date.now()) return cached.data;
 
-  const result = (await fr24List(flightNumber)) ?? (await fr24Find(flightNumber));
+  const result =
+    (await fr24List(flightNumber)) ??
+    (await fr24Find(flightNumber)) ??
+    (opts?.noProxy ? null : await fetchRouteViaProxy(flightNumber));
 
-  fr24Cache.set(flightNumber, { data: result, expires: Date.now() + FR24_CACHE_TTL_MS });
+  fr24Cache.set(flightNumber, {
+    data: result,
+    expires: Date.now() + (result ? FR24_CACHE_HIT_TTL_MS : FR24_CACHE_MISS_TTL_MS),
+  });
   return result;
 }
 
@@ -389,9 +445,10 @@ export async function fetchRouteset(
  */
 export async function fetchRoute(
   flightInput: string,
-  pos?: { lat: number; lon: number }
+  pos?: { lat: number; lon: number },
+  opts?: { noProxy?: boolean }
 ): Promise<(RouteInfo & { plausible?: boolean | null }) | null> {
-  const fr24 = await fetchRouteFr24(flightInput);
+  const fr24 = await fetchRouteFr24(flightInput, opts);
   if (fr24) return fr24;
 
   const routeset = await fetchRouteset(flightInput, pos);

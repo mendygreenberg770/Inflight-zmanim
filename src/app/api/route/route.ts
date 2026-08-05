@@ -20,6 +20,9 @@ export async function GET(req: NextRequest) {
   if (!ident) {
     return NextResponse.json({ error: "ident parameter is required" }, { status: 400 });
   }
+  // Set when another deployment of this app relays a lookup here; prevents
+  // proxy loops if ROUTE_LOOKUP_PROXY is misconfigured to point at ourselves.
+  const isProxied = req.nextUrl.searchParams.get("proxied") === "1";
 
   const fa = await fetchFlightAware(ident);
   if (fa?.route) {
@@ -40,7 +43,7 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  const route = await fetchRoute(ident);
+  const route = await fetchRoute(ident, undefined, { noProxy: isProxied });
   if (route) {
     const from = resolveAirport(route.originIata, route.originIcao);
     const to = resolveAirport(route.destIata, route.destIcao);
