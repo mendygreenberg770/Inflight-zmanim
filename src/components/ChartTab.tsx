@@ -9,7 +9,7 @@ import {
   fmtLongDate,
   fmtTime,
 } from "@/lib/format";
-import { ZMAN_DEFS, ZmanKey } from "@/lib/zmanim";
+import { EVENT_DEFS, ROW_DEFS, RowKey, ZMAN_DEFS, ZmanKey } from "@/lib/zmanim";
 
 interface Airport {
   iata: string;
@@ -21,7 +21,7 @@ interface Airport {
 }
 
 interface ZmanRange {
-  zman: ZmanKey;
+  key: RowKey;
   earliestMs: number;
   latestMs: number;
   uncertain: boolean;
@@ -51,12 +51,12 @@ interface ChartData {
     durationEstimated: boolean;
     estimatedDurationMs: number;
     zmanim: ZmanKey[];
-    arctic: { enter: number | null; exit: number | null } | null;
+    pathSource: { type: "historical" | "greatCircle"; count: number; flight?: string };
   };
   tiles: Tile[];
 }
 
-const ZMAN_BY_KEY = Object.fromEntries(ZMAN_DEFS.map((z) => [z.key, z]));
+const ROW_BY_KEY = Object.fromEntries(ROW_DEFS.map((z) => [z.key, z]));
 
 function todayISO(): string {
   const d = new Date();
@@ -72,6 +72,7 @@ export default function ChartTab() {
   const [start, setStart] = useState("18:00");
   const [windowMinutes, setWindowMinutes] = useState(180);
   const [duration, setDuration] = useState(""); // minutes, blank = auto
+  const [flightIdent, setFlightIdent] = useState("");
   const [includeRT, setIncludeRT] = useState(true);
   const [includeMK, setIncludeMK] = useState(false);
 
@@ -98,6 +99,7 @@ export default function ChartTab() {
         zmanim: zmanim.join(","),
       });
       if (duration) params.set("durationMinutes", duration);
+      if (flightIdent) params.set("flight", flightIdent);
       const res = await fetch(`/api/chart?${params}`);
       const json = await res.json();
       if (!res.ok) throw new Error(json.error ?? "Request failed");
@@ -114,6 +116,7 @@ export default function ChartTab() {
   function applyRoute(r: RouteLookupResult) {
     setFrom(r.from.iata);
     setTo(r.to.iata);
+    setFlightIdent(r.ident);
     if (r.durationMinutes) setDuration(String(r.durationMinutes));
   }
 
@@ -213,6 +216,13 @@ function ChartResult({ data }: { data: ChartData }) {
   const { meta, tiles } = data;
   const tz = meta.timezone;
 
+  const arcticRange = tiles
+    .flatMap((t) => t.ranges)
+    .find((r) => r.key === "arcticEnter" || r.key === "arcticExit");
+  const eventKeysUsed = new Set(
+    tiles.flatMap((t) => t.ranges.map((r) => r.key)).filter((k) => ROW_BY_KEY[k] && !ZMAN_DEFS.some((z) => z.key === k))
+  );
+
   return (
     <div className="mt-6">
       {/* Header, MyZmanim-style */}
@@ -245,18 +255,26 @@ function ChartResult({ data }: { data: ChartData }) {
             Flight time used: {fmtDurationMinutes(meta.durationMs / 60_000)}
             {meta.durationEstimated ? " (estimated)" : ""}
           </p>
+          <p
+            className={
+              meta.pathSource.type === "historical"
+                ? "font-medium text-green-800"
+                : "text-amber-700"
+            }
+          >
+            {meta.pathSource.type === "historical"
+              ? `Based on ${meta.pathSource.count} recent actual flightpaths of ${meta.pathSource.flight}`
+              : "Based on a great-circle route estimate (no recent flightpath data)"}
+          </p>
           <p className="font-semibold">All times are in {meta.from.city} time.</p>
           {meta.dst && <p>Daylight saving time</p>}
         </div>
       </div>
 
-      {meta.arctic?.enter != null && (
+      {arcticRange && (
         <p className="mt-3 rounded-md bg-amber-50 px-4 py-3 text-sm text-amber-800">
-          ⚠️ This route passes through the Arctic circle (approx.{" "}
-          {fmtDay(meta.arctic.enter, tz)} {fmtTime(meta.arctic.enter, tz)}
-          {meta.arctic.exit != null &&
-            ` — ${fmtDay(meta.arctic.exit, tz)} ${fmtTime(meta.arctic.exit, tz)}`}
-          ). Zmanim in the Arctic involve serious halachic questions — consult a Rov.
+          ⚠️ This route passes through the Arctic circle — see the Enter/Exit Arctic rows.
+          Zmanim in the Arctic involve serious halachic questions — consult a Rov.
         </p>
       )}
 
@@ -278,10 +296,10 @@ function ChartResult({ data }: { data: ChartData }) {
             <table className="w-full text-[13px]">
               <tbody>
                 {tile.ranges.map((r, i) => {
-                  const def = ZMAN_BY_KEY[r.zman];
+                  const def = ROW_BY_KEY[r.key];
                   return (
                     <tr
-                      key={`${r.zman}-${i}`}
+                      key={`${r.key}-${i}`}
                       className={
                         (r.uncertain ? "text-gray-400 " : "text-gray-900 ") +
                         (i % 2 ? "bg-gray-50" : "")
@@ -289,7 +307,7 @@ function ChartResult({ data }: { data: ChartData }) {
                       title={def?.description}
                     >
                       <td className="whitespace-nowrap px-2 py-1 font-medium">
-                        {def?.label ?? r.zman}
+                        {def?.label ?? r.key}
                       </td>
                       <td className="whitespace-nowrap px-2 py-1 text-right tabular-nums">
                         {fmtDay(r.earliestMs, tz)}: {fmtTime(r.earliestMs, tz)} ‐{" "}
@@ -316,7 +334,10 @@ function ChartResult({ data }: { data: ChartData }) {
         <h3 className="font-bold">Zmanim included — Chabad / Alter Rebbe</h3>
         <table className="mt-2 w-full max-w-3xl text-sm">
           <tbody>
-            {ZMAN_DEFS.filter((z) => meta.zmanim.includes(z.key)).map((z) => (
+            {[
+              ...ZMAN_DEFS.filter((z) => meta.zmanim.includes(z.key)),
+              ...EVENT_DEFS.filter((e) => eventKeysUsed.has(e.key)),
+            ].map((z) => (
               <tr key={z.key} className="align-top">
                 <td className="whitespace-nowrap py-0.5 pr-4 font-medium">{z.label}</td>
                 <td className="py-0.5 pr-4 text-gray-600">{z.description}</td>
@@ -339,10 +360,12 @@ function ChartResult({ data }: { data: ChartData }) {
           </p>
           <p>
             TAKEOFF and LANDING are when the aircraft actually leaves/touches the ground —
-            not the gate times on your itinerary. All times assume a great-circle route at
-            typical airliner speeds; if your flight is rerouted significantly, do not rely
-            on these times. The precision achievable for zmanim in the air is lower than on
-            the ground — distance yourself from the boundaries as much as possible.
+            not the gate times on your itinerary.{" "}
+            {meta.pathSource.type === "historical"
+              ? `Times were computed along ${meta.pathSource.count} recent actual flightpaths of ${meta.pathSource.flight}; if your flightpath differs significantly from recent flights (diversion, unusual routing), do not rely on these times.`
+              : "Times assume a great-circle route at typical airliner speeds; if your flight is rerouted significantly, do not rely on these times."}{" "}
+            The precision achievable for zmanim in the air is lower than on the ground —
+            distance yourself from the boundaries as much as possible.
           </p>
         </div>
       </div>

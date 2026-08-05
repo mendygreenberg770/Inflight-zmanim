@@ -118,6 +118,7 @@ export async function fetchLivePosition(flightInput: string): Promise<LivePositi
  */
 interface Fr24Flight {
   identification?: {
+    id?: string | null;
     number?: { default?: string | null };
     callsign?: string | null;
   };
@@ -148,25 +149,36 @@ export const BROWSER_HEADERS = {
   Accept: "application/json",
 };
 
-/** FR24 flight-list endpoint (richest data, but bot-protected on some networks). */
-async function fr24List(flightNumber: string): Promise<RouteInfo | null> {
-  let result: RouteInfo | null = null;
+/** Raw FR24 flight-list fetch: recent flights (live, scheduled, and landed) for a flight number. */
+async function fr24ListRaw(flightNumber: string): Promise<Fr24Flight[] | null> {
   try {
     const url =
       "https://api.flightradar24.com/common/v1/flight/list.json?query=" +
       encodeURIComponent(flightNumber) +
-      "&fetchBy=flight&limit=10";
+      "&fetchBy=flight&limit=20";
     const res = await fetch(url, {
       headers: BROWSER_HEADERS,
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
       cache: "no-store",
     });
-    if (res.ok) {
-      const json = (await res.json()) as {
-        result?: { response?: { data?: Fr24Flight[] | null } };
-      };
-      const data = json?.result?.response?.data;
-      const flights = (Array.isArray(data) ? data : []).filter((f) => {
+    if (!res.ok) return null;
+    const json = (await res.json()) as {
+      result?: { response?: { data?: Fr24Flight[] | null } };
+    };
+    const data = json?.result?.response?.data;
+    return Array.isArray(data) ? data : null;
+  } catch {
+    return null;
+  }
+}
+
+/** FR24 flight-list endpoint (richest data, but bot-protected on some networks). */
+async function fr24List(flightNumber: string): Promise<RouteInfo | null> {
+  let result: RouteInfo | null = null;
+  {
+    const data = await fr24ListRaw(flightNumber);
+    if (data) {
+      const flights = data.filter((f) => {
         const o = f?.airport?.origin?.code;
         const d = f?.airport?.destination?.code;
         return Boolean((o?.iata || o?.icao) && (d?.iata || d?.icao));
@@ -198,8 +210,6 @@ async function fr24List(flightNumber: string): Promise<RouteInfo | null> {
         };
       }
     }
-  } catch {
-    return null;
   }
   return result;
 }
@@ -346,6 +356,172 @@ export async function fetchRouteFr24(
     expires: Date.now() + (result ? FR24_CACHE_HIT_TTL_MS : FR24_CACHE_MISS_TTL_MS),
   });
   return result;
+}
+
+// ── FlightRadar24 recorded flightpaths (the MyZmanim approach) ───────────────
+
+export interface RecordedTrack {
+  /** e.g. "2026-08-04 (UAL994)" */
+  label: string;
+  durationMs: number;
+  /** Normalized waypoints: frac 0 = takeoff, 1 = landing. */
+  points: { frac: number; lat: number; lon: number }[];
+}
+
+interface Fr24PlaybackPoint {
+  latitude?: number;
+  longitude?: number;
+  altitude?: { feet?: number };
+  speed?: { kts?: number };
+  timestamp?: number;
+}
+
+const trackCache = new Map<string, { data: RecordedTrack[]; expires: number }>();
+const TRACK_CACHE_HIT_TTL_MS = 6 * 3600_000;
+const TRACK_CACHE_MISS_TTL_MS = 2 * 60_000;
+
+const MAX_TRACK_POINTS = 240;
+
+function normalizeTrack(points: Fr24PlaybackPoint[], label: string): RecordedTrack | null {
+  // Keep only airborne samples with a full fix
+  const airborne = points.filter(
+    (p) =>
+      typeof p.latitude === "number" &&
+      typeof p.longitude === "number" &&
+      typeof p.timestamp === "number" &&
+      ((p.altitude?.feet ?? 0) > 400 || (p.speed?.kts ?? 0) > 90)
+  );
+  if (airborne.length < 15) return null;
+
+  const t0 = airborne[0].timestamp as number;
+  const t1 = airborne[airborne.length - 1].timestamp as number;
+  const durationMs = (t1 - t0) * 1000;
+  if (durationMs < 30 * 60_000 || durationMs > 20 * 3600_000) return null;
+
+  const stride = Math.max(1, Math.ceil(airborne.length / MAX_TRACK_POINTS));
+  const pts: RecordedTrack["points"] = [];
+  let lastFrac = -1;
+  for (let i = 0; i < airborne.length; i += stride) {
+    const p = airborne[i];
+    const frac = ((p.timestamp as number) - t0) / (t1 - t0);
+    if (frac <= lastFrac) continue;
+    pts.push({
+      frac,
+      lat: Math.round((p.latitude as number) * 1000) / 1000,
+      lon: Math.round((p.longitude as number) * 1000) / 1000,
+    });
+    lastFrac = frac;
+  }
+  const last = airborne[airborne.length - 1];
+  if (lastFrac < 1) {
+    pts.push({ frac: 1, lat: last.latitude as number, lon: last.longitude as number });
+  }
+  if (pts.length < 10) return null;
+  return { label, durationMs, points: pts };
+}
+
+async function fr24Playback(flightId: string, label: string): Promise<RecordedTrack | null> {
+  try {
+    const res = await fetch(
+      `https://api.flightradar24.com/common/v1/flight-playback.json?flightId=${encodeURIComponent(flightId)}`,
+      {
+        headers: BROWSER_HEADERS,
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+        cache: "no-store",
+      }
+    );
+    if (!res.ok) return null;
+    const json = (await res.json()) as {
+      result?: {
+        response?: { data?: { flight?: { track?: Fr24PlaybackPoint[] | null } | null } | null };
+      };
+    };
+    const track = json?.result?.response?.data?.flight?.track;
+    if (!Array.isArray(track)) return null;
+    return normalizeTrack(track, label);
+  } catch {
+    return null;
+  }
+}
+
+const codeMatches = (codes: string[] | undefined, iata?: string, icao?: string) =>
+  !codes ||
+  codes.length === 0 ||
+  codes.some((c) => c && (c === (iata ?? "").toUpperCase() || c === (icao ?? "").toUpperCase()));
+
+/**
+ * Recent completed flightpaths of a flight number, from FR24 playback data —
+ * the same idea as MyZmanim's "5 most recent flightpaths". Restricted to
+ * flights matching the requested route so a schedule change doesn't mix in
+ * tracks of a different city pair. Relays through ROUTE_LOOKUP_PROXY when
+ * FR24 is blocked on this host.
+ */
+export async function fetchRecentTracks(
+  flightInput: string,
+  opts?: { fromCodes?: string[]; toCodes?: string[]; max?: number; noProxy?: boolean }
+): Promise<RecordedTrack[]> {
+  const flightNumber = toIataFlightNumber(flightInput);
+  if (!flightNumber) return [];
+  const max = opts?.max ?? 5;
+  const cacheKey = `${flightNumber}|${(opts?.fromCodes ?? []).join(",")}|${(opts?.toCodes ?? []).join(",")}`;
+  const cached = trackCache.get(cacheKey);
+  if (cached && cached.expires > Date.now()) return cached.data;
+
+  let tracks: RecordedTrack[] = [];
+
+  const list = await fr24ListRaw(flightNumber);
+  if (list) {
+    const completed = list
+      .filter(
+        (f) =>
+          f?.identification?.id &&
+          typeof f?.time?.real?.departure === "number" &&
+          typeof f?.time?.real?.arrival === "number" &&
+          codeMatches(opts?.fromCodes, f?.airport?.origin?.code?.iata, f?.airport?.origin?.code?.icao) &&
+          codeMatches(opts?.toCodes, f?.airport?.destination?.code?.iata, f?.airport?.destination?.code?.icao)
+      )
+      .sort((a, b) => (b.time?.real?.departure ?? 0) - (a.time?.real?.departure ?? 0))
+      .slice(0, max);
+
+    const fetched = await Promise.all(
+      completed.map((f) => {
+        const dep = f.time?.real?.departure;
+        const label = dep
+          ? new Date(dep * 1000).toISOString().slice(0, 10)
+          : (f.identification?.id as string);
+        return fr24Playback(f.identification!.id as string, label);
+      })
+    );
+    tracks = fetched.filter((t): t is RecordedTrack => t != null);
+  }
+
+  // Relay through a sibling deployment when FR24 is blocked here
+  if (tracks.length === 0 && !opts?.noProxy) {
+    const base = process.env.ROUTE_LOOKUP_PROXY?.replace(/\/+$/, "");
+    if (base) {
+      try {
+        const params = new URLSearchParams({ ident: flightNumber, proxied: "1" });
+        if (opts?.fromCodes?.[0]) params.set("from", opts.fromCodes[0]);
+        if (opts?.toCodes?.[0]) params.set("to", opts.toCodes[0]);
+        const res = await fetch(`${base}/api/tracks?${params}`, {
+          signal: AbortSignal.timeout(15_000),
+          cache: "no-store",
+        });
+        if (res.ok) {
+          const j = (await res.json()) as { tracks?: RecordedTrack[] };
+          if (Array.isArray(j?.tracks)) tracks = j.tracks;
+        }
+      } catch {
+        // fall through to great-circle
+      }
+    }
+  }
+
+  trackCache.set(cacheKey, {
+    data: tracks,
+    expires: Date.now() + (tracks.length ? TRACK_CACHE_HIT_TTL_MS : TRACK_CACHE_MISS_TTL_MS),
+  });
+  return tracks;
 }
 
 interface AdsbdbAirport {

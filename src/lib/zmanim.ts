@@ -65,6 +65,51 @@ export const DEFAULT_ZMANIM: ZmanKey[] = ZMAN_DEFS.map((z) => z.key).filter(
   (k) => k !== "tzeis72" && k !== "minchaKetana"
 );
 
+// ── Path events (non-solar rows, like MyZmanim's special rows) ───────────────
+
+export type PathEventKey = "arcticEnter" | "arcticExit" | "dateLineEast" | "dateLineWest";
+
+/** Any row that can appear in a chart tile / crossing list. */
+export type RowKey = ZmanKey | PathEventKey;
+
+export interface EventDef {
+  key: PathEventKey;
+  label: string;
+  hebrew: string;
+  description: string;
+}
+
+export const EVENT_DEFS: EventDef[] = [
+  {
+    key: "arcticEnter",
+    label: "Enter Arctic",
+    hebrew: "כניסה למעגל הארקטי",
+    description: "Aircraft enters the Arctic circle (66.56°) — consult a Rov",
+  },
+  {
+    key: "arcticExit",
+    label: "Exit Arctic",
+    hebrew: "יציאה ממעגל הארקטי",
+    description: "Aircraft exits the Arctic circle",
+  },
+  {
+    key: "dateLineEast",
+    label: "East Date Line",
+    hebrew: "קו התאריך להלכה לדעת ר׳ טוקצינסקי",
+    description: "Halachic Date Line per R' Tukachinsky (~145°W)",
+  },
+  {
+    key: "dateLineWest",
+    label: "West Date Line",
+    hebrew: "קו התאריך להלכה לדעת החזון איש",
+    description: "Halachic Date Line per the Chazon Ish (~125°E)",
+  },
+];
+
+/** Merged label lookup for every row key (zmanim + path events). */
+export const ROW_DEFS: { key: RowKey; label: string; hebrew: string; description: string }[] =
+  [...ZMAN_DEFS, ...EVENT_DEFS];
+
 export type DayZmanim = Partial<Record<ZmanKey, number | null>>;
 
 /**

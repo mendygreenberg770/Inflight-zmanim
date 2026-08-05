@@ -59,12 +59,25 @@ BaalHatanya methods to within 0.1 seconds — run `npx tsx scripts/verify-zmanim
 ## How in-flight zmanim are computed
 
 A zman occurs in flight at the instant the zman computed for the aircraft's
-current position equals the current time. The engine samples the great-circle
-flight path every minute, evaluates `f(t) = zman(position(t)) − t` (using the
-nearest solar day, so date-line and midnight rollovers are handled), and finds
-the sign changes. Takeoff-bucket edges × fast/slow flight profiles produce the
-min–max span shown per tile. Routes crossing the Arctic circle get a warning
-with entry/exit times.
+current position equals the current time. The engine samples the flight path
+every minute, evaluates `f(t) = zman(position(t)) − t` (using the nearest
+solar day, so date-line and midnight rollovers are handled), and finds the
+sign changes.
+
+**Flight paths — the MyZmanim approach:** when a flight number is provided,
+the chart and exact modes fetch the **most recent actual recorded flightpaths**
+of that flight (up to 5, restricted to the matching city pair) and compute
+across all of them; the tile ranges span every path. The header states
+"Based on N recent actual flightpaths". When no recorded tracks are available,
+it falls back to a great-circle route with ±6% fast/slow variants — the header
+then says so, and results should be treated more cautiously on routes that
+deviate from great circle (weather reroutes, airspace avoidance).
+
+**Special rows (shown when the route crosses them, like MyZmanim):**
+- Enter/Exit Arctic — the Arctic circle (66.56°), where zmanim require a Rov
+- East Date Line — Halachic Date Line per R' Tukachinsky (~145°W)
+- West Date Line — Halachic Date Line per the Chazon Ish (~125°E)
+  (assumed to run straight between the poles, as MyZmanim does)
 
 ## Running
 

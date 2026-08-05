@@ -1,11 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { findAirport } from "@/lib/airports";
 import {
-  arcticCrossings,
   estimateDurationMs,
   exactCrossings,
+  FlightPath,
+  gcPathSet,
 } from "@/lib/flightEngine";
 import { gcDistanceKm, initialBearing } from "@/lib/greatCircle";
+import { fetchRecentTracks } from "@/lib/liveProviders";
 import { isDst, zonedTimeToUtc } from "@/lib/tz";
 import { DEFAULT_ZMANIM, ZMAN_DEFS, ZmanKey } from "@/lib/zmanim";
 
@@ -13,7 +15,7 @@ export const dynamic = "force-dynamic";
 
 const VALID_KEYS = new Set(ZMAN_DEFS.map((z) => z.key));
 
-export function GET(req: NextRequest) {
+export async function GET(req: NextRequest) {
   const p = req.nextUrl.searchParams;
 
   const from = findAirport(p.get("from") ?? "");
@@ -54,19 +56,32 @@ export function GET(req: NextRequest) {
     if (requested.length > 0) zmanim = requested;
   }
 
-  const spread = 0.06;
-  const crossings = exactCrossings({
-    from: fromLL,
-    to: toLL,
-    takeoffMs,
-    durationMs,
-    durationSpread: spread,
-    zmanim,
-  });
+  // Actual recorded flightpaths when available (MyZmanim approach), else great circle
+  const flightIdent = (p.get("flight") ?? "").trim();
+  let paths: FlightPath[] = [];
+  let pathSource: { type: "historical" | "greatCircle"; count: number; flight?: string } = {
+    type: "greatCircle",
+    count: 3,
+  };
+  if (flightIdent) {
+    const tracks = await fetchRecentTracks(flightIdent, {
+      fromCodes: [from.iata, from.icao],
+      toCodes: [to.iata, to.icao],
+    });
+    if (tracks.length >= 2) {
+      paths = tracks;
+      pathSource = { type: "historical", count: tracks.length, flight: flightIdent };
+    }
+  }
+  if (paths.length === 0) {
+    paths = gcPathSet(fromLL, toLL, durationMs);
+  }
 
+  const { crossings, nominalPath } = exactCrossings({ paths, takeoffMs, zmanim });
+
+  const durations = paths.map((x) => x.durationMs);
   const km = gcDistanceKm(fromLL, toLL);
   const lonDiff = ((to.lon - from.lon + 540) % 360) - 180;
-  const arctic = arcticCrossings({ takeoffMs, durationMs, from: fromLL, to: toLL });
 
   return NextResponse.json({
     meta: {
@@ -86,17 +101,18 @@ export function GET(req: NextRequest) {
       timezone: from.tz,
       dst: isDst(from.tz, takeoffMs),
       takeoffMs,
-      durationMs,
-      durationEstimated: !(durationMinutes > 30 && durationMinutes < 1500),
+      durationMs: nominalPath.durationMs,
+      durationEstimated:
+        pathSource.type === "greatCircle" && !(durationMinutes > 30 && durationMinutes < 1500),
       estimatedDurationMs: estimatedMs,
       zmanim,
-      arctic: arctic.enter != null ? arctic : null,
+      pathSource,
     },
     crossings,
     landing: {
-      nominalMs: takeoffMs + durationMs,
-      earliestMs: takeoffMs + Math.round(durationMs * (1 - spread)),
-      latestMs: takeoffMs + Math.round(durationMs * (1 + spread)),
+      nominalMs: takeoffMs + nominalPath.durationMs,
+      earliestMs: takeoffMs + Math.min(...durations),
+      latestMs: takeoffMs + Math.max(...durations),
     },
   });
 }
