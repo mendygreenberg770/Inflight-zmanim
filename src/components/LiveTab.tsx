@@ -2,8 +2,11 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import AirportInput from "./AirportInput";
+import { AIRLINES } from "@/lib/airlines";
 import { fmtDayTime, fmtRelative, fmtTime } from "@/lib/format";
 import { ZMAN_DEFS, ZmanKey } from "@/lib/zmanim";
+
+const SORTED_AIRLINES = [...AIRLINES].sort((a, b) => a.name.localeCompare(b.name));
 
 const REFRESH_SECONDS = 60;
 
@@ -31,6 +34,8 @@ interface LiveData {
     to: Airport | null;
     destKnown: boolean;
     source: string | null;
+    suspect: boolean;
+    suspectMessage: string | null;
   };
   nowMs: number;
   etaMs: number | null;
@@ -49,7 +54,9 @@ interface LiveError {
 const ZMAN_BY_KEY = Object.fromEntries(ZMAN_DEFS.map((z) => [z.key, z]));
 
 export default function LiveTab() {
+  const [airline, setAirline] = useState("UA");
   const [flight, setFlight] = useState("");
+  const [fromOverride, setFromOverride] = useState("");
   const [destOverride, setDestOverride] = useState("");
   const [demo, setDemo] = useState(false);
   const [demoFrom, setDemoFrom] = useState("EWR");
@@ -60,25 +67,35 @@ export default function LiveTab() {
   const [loading, setLoading] = useState(false);
   const [clockMs, setClockMs] = useState(0);
   const [secondsToRefresh, setSecondsToRefresh] = useState(REFRESH_SECONDS);
-  const flightRef = useRef(flight);
+  // The flight number field accepts either a bare number (combined with the
+  // selected airline: "1403" -> "UA1403") or a full ident/callsign ("UAL1403").
+  const ident = /^[0-9]+[A-Za-z]?$/.test(flight.trim())
+    ? `${airline}${flight.trim()}`
+    : flight.trim();
+
+  const identRef = useRef(ident);
+  const fromRef = useRef(fromOverride);
   const destRef = useRef(destOverride);
   const demoRef = useRef({ demo, demoFrom, demoProgress });
   useEffect(() => {
-    flightRef.current = flight;
+    identRef.current = ident;
+    fromRef.current = fromOverride;
     destRef.current = destOverride;
     demoRef.current = { demo, demoFrom, demoProgress };
-  }, [flight, destOverride, demo, demoFrom, demoProgress]);
+  }, [ident, fromOverride, destOverride, demo, demoFrom, demoProgress]);
 
   const refresh = useCallback(async () => {
-    if (!flightRef.current.trim() && !demoRef.current.demo) return;
+    if (!identRef.current && !demoRef.current.demo) return;
     setLoading(true);
     try {
-      const params = new URLSearchParams({ flight: flightRef.current.trim() || "DEMO" });
+      const params = new URLSearchParams({ flight: identRef.current || "DEMO" });
       if (destRef.current.trim()) params.set("to", destRef.current.trim());
       if (demoRef.current.demo) {
         params.set("sim", "1");
         params.set("from", demoRef.current.demoFrom.trim());
         params.set("progress", String(demoRef.current.demoProgress / 100));
+      } else if (fromRef.current.trim()) {
+        params.set("from", fromRef.current.trim());
       }
       const res = await fetch(`/api/live?${params}`);
       const json = await res.json();
@@ -132,23 +149,41 @@ export default function LiveTab() {
     <div>
       <form
         onSubmit={start}
-        className="grid grid-cols-1 gap-4 rounded-lg border border-gray-200 bg-gray-50 p-4 sm:grid-cols-4"
+        className="grid grid-cols-2 gap-4 rounded-lg border border-gray-200 bg-gray-50 p-4 sm:grid-cols-3 lg:grid-cols-5"
       >
-        <label className="block sm:col-span-2">
-          <span className="block text-sm font-medium text-gray-700">
-            Flight number / callsign
-          </span>
+        <label className="block">
+          <span className="block text-sm font-medium text-gray-700">Airline</span>
+          <select
+            value={airline}
+            onChange={(e) => setAirline(e.target.value)}
+            className="mt-1 w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm"
+          >
+            {SORTED_AIRLINES.map((a) => (
+              <option key={a.iata} value={a.iata}>
+                {a.name} ({a.iata})
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="block">
+          <span className="block text-sm font-medium text-gray-700">Flight number</span>
           <input
             type="text"
             value={flight}
             onChange={(e) => setFlight(e.target.value.toUpperCase())}
-            placeholder="e.g. UA84, LY26, DLH404"
+            placeholder="e.g. 1403 or UAL1403"
             className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm uppercase"
             autoCorrect="off"
             spellCheck={false}
             required={!demo}
           />
         </label>
+        <AirportInput
+          label="Origin override (optional)"
+          value={fromOverride}
+          onChange={setFromOverride}
+          placeholder="auto-detect"
+        />
         <AirportInput
           label="Destination override (optional)"
           value={destOverride}
@@ -173,7 +208,7 @@ export default function LiveTab() {
             </button>
           )}
         </div>
-        <div className="flex flex-wrap items-center gap-4 sm:col-span-4">
+        <div className="col-span-2 flex flex-wrap items-center gap-4 sm:col-span-3 lg:col-span-5">
           <label className="flex items-center gap-2 text-sm text-gray-700">
             <input type="checkbox" checked={demo} onChange={(e) => setDemo(e.target.checked)} />
             Demo mode (simulate a position mid-flight — no live data needed)
@@ -275,6 +310,12 @@ export default function LiveTab() {
               hint={data.etaMs ? fmtRelative(data.etaMs, nowMs) : undefined}
             />
           </div>
+
+          {data.route.suspect && data.route.suspectMessage && (
+            <p className="rounded-md border border-red-300 bg-red-50 px-4 py-3 text-sm font-medium text-red-800">
+              ⚠️ Route data looks wrong: {data.route.suspectMessage}
+            </p>
+          )}
 
           {!data.route.destKnown && (
             <p className="rounded-md bg-amber-50 px-4 py-3 text-sm text-amber-800">

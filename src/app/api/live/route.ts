@@ -2,9 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { Airport, findAirport } from "@/lib/airports";
 import { scenarioCrossings, Scenario } from "@/lib/flightEngine";
 import {
+  crossTrackKm,
   gcDestination,
   gcDistanceKm,
   gcIntermediate,
+  initialBearing,
   LatLon,
 } from "@/lib/greatCircle";
 import {
@@ -78,7 +80,10 @@ export async function GET(req: NextRequest) {
 
     if (!position) position = await fetchLivePosition(flight);
     if (!route?.destIata && !route?.destIcao) {
-      route = (await fetchRoute(flight)) ?? route;
+      // Pass the live position so the route lookup can be plausibility-checked
+      route =
+        (await fetchRoute(flight, position ? { lat: position.lat, lon: position.lon } : undefined)) ??
+        route;
     }
   }
 
@@ -114,6 +119,36 @@ export async function GET(req: NextRequest) {
   const pos: LatLon = { lat: position.lat, lon: position.lon };
   const gsKt = position.groundSpeedKt && position.groundSpeedKt > 60 ? position.groundSpeedKt : 460;
   const kmPerMs = (gsKt * 1.852) / 3600_000;
+
+  // Sanity-check community route data against the live position: the aircraft
+  // should be near the origin→destination great circle and (when moving)
+  // heading broadly toward the destination. Reused flight numbers make stale
+  // routes common — better to warn than to compute zmanim toward the wrong city.
+  let routeSuspect = false;
+  const suspectReasons: string[] = [];
+  if (dest && !destOverride && !p.get("sim")) {
+    const destLL = { lat: dest.lat, lon: dest.lon };
+    if (origin) {
+      const originLL = { lat: origin.lat, lon: origin.lon };
+      const xtKm = Math.abs(crossTrackKm(pos, originLL, destLL));
+      if (xtKm > 500) {
+        routeSuspect = true;
+        suspectReasons.push(
+          `the aircraft is ${Math.round(xtKm)} km off the ${origin.iata}→${dest.iata} route`
+        );
+      }
+    }
+    if (position.track != null && gsKt > 200) {
+      const bearingToDest = initialBearing(pos, destLL);
+      const diff = Math.abs(((position.track - bearingToDest + 540) % 360) - 180);
+      if (diff > 120 && gcDistanceKm(pos, destLL) > 300) {
+        routeSuspect = true;
+        suspectReasons.push(
+          `it is heading ${Math.round(position.track)}° while ${dest.iata} is at bearing ${Math.round(bearingToDest)}°`
+        );
+      }
+    }
+  }
 
   // 2. Forward path: to the destination if known, else project along current track
   let target: LatLon;
@@ -200,6 +235,10 @@ export async function GET(req: NextRequest) {
       to: dest ?? null,
       destKnown,
       source: route?.source ?? (fromOverride || destOverride ? "manual" : null),
+      suspect: routeSuspect,
+      suspectMessage: routeSuspect
+        ? `The route from the flight database (${origin ? origin.iata + " → " : ""}${dest?.iata}) doesn't match the aircraft: ${suspectReasons.join(", and ")}. Flight-number route databases are community-maintained and often stale — set the origin/destination overrides to correct it.`
+        : null,
     },
     nowMs: now,
     etaMs: destKnown ? etaMs : null,

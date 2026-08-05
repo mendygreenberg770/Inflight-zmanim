@@ -49,6 +49,17 @@ export function gcIntermediate(a: LatLon, b: LatLon, f: number): LatLon {
   };
 }
 
+/**
+ * Signed cross-track distance (km) of point p from the great-circle path a→b.
+ * Used to sanity-check community route data against a live position.
+ */
+export function crossTrackKm(p: LatLon, a: LatLon, b: LatLon): number {
+  const δ13 = gcDistanceKm(a, p) / EARTH_RADIUS_KM;
+  const θ13 = initialBearing(a, p) * DEG;
+  const θ12 = initialBearing(a, b) * DEG;
+  return Math.asin(Math.sin(δ13) * Math.sin(θ13 - θ12)) * EARTH_RADIUS_KM;
+}
+
 /** Move from a point along a bearing by a distance (for track projection with no known destination). */
 export function gcDestination(a: LatLon, bearingDeg: number, distanceKm: number): LatLon {
   const φ1 = a.lat * DEG, λ1 = a.lon * DEG;

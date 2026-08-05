@@ -107,7 +107,7 @@ interface AdsbdbAirport {
   icao_code?: string;
 }
 
-export async function fetchRoute(flightInput: string): Promise<RouteInfo | null> {
+async function fetchRouteAdsbdb(flightInput: string): Promise<RouteInfo | null> {
   for (const cs of candidateCallsigns(flightInput)) {
     try {
       const data = (await getJson(`https://api.adsbdb.com/v0/callsign/${cs}`)) as {
@@ -132,6 +132,81 @@ export async function fetchRoute(flightInput: string): Promise<RouteInfo | null>
   return null;
 }
 
+/**
+ * adsb.lol routeset API: looks up the route for a callsign and — when a live
+ * position is supplied — checks it for plausibility against that position.
+ * Community data (same upstream family as adsbdb) but with the extra sanity
+ * signal, so it's preferred when the aircraft is airborne.
+ */
+async function fetchRouteset(
+  flightInput: string,
+  pos?: { lat: number; lon: number }
+): Promise<(RouteInfo & { plausible: boolean | null }) | null> {
+  for (const cs of candidateCallsigns(flightInput)) {
+    try {
+      const res = await fetch("https://api.adsb.lol/api/0/routeset", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          planes: [{ callsign: cs, lat: pos?.lat ?? 0, lng: pos?.lon ?? 0 }],
+        }),
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+        cache: "no-store",
+      });
+      if (!res.ok) continue;
+      const data = (await res.json()) as {
+        callsign?: string;
+        airport_codes?: string;
+        plausible?: number | boolean;
+        _airports?: { iata?: string; icao?: string }[];
+      }[];
+      const entry = Array.isArray(data) ? data[0] : undefined;
+      const airports = entry?._airports;
+      if (
+        entry &&
+        entry.airport_codes &&
+        entry.airport_codes !== "unknown" &&
+        Array.isArray(airports) &&
+        airports.length >= 2
+      ) {
+        // Multi-leg routes list every stop; take the endpoints.
+        const first = airports[0];
+        const last = airports[airports.length - 1];
+        return {
+          originIata: first.iata,
+          originIcao: first.icao,
+          destIata: last.iata,
+          destIcao: last.icao,
+          source: "adsb.lol routeset",
+          plausible: pos ? Boolean(entry.plausible) : null,
+        };
+      }
+    } catch {
+      // try next callsign
+    }
+  }
+  return null;
+}
+
+/**
+ * Best-effort route lookup. With a live position, prefers the routeset API
+ * (which can flag implausible routes); otherwise falls back to adsbdb.
+ * Community flight-number databases are often stale for reused flight
+ * numbers, so callers should still sanity-check against the live position.
+ */
+export async function fetchRoute(
+  flightInput: string,
+  pos?: { lat: number; lon: number }
+): Promise<(RouteInfo & { plausible?: boolean | null }) | null> {
+  const routeset = await fetchRouteset(flightInput, pos);
+  // A routeset answer flagged implausible for the current position is worse
+  // than trying another source; only accept it as a last resort.
+  if (routeset && routeset.plausible !== false) return routeset;
+  const adsbdb = await fetchRouteAdsbdb(flightInput);
+  if (adsbdb) return adsbdb;
+  return routeset;
+}
+
 // ── FlightAware AeroAPI (optional) ───────────────────────────────────────────
 
 interface FaFlight {
@@ -142,6 +217,8 @@ interface FaFlight {
   actual_off?: string | null;
   actual_on?: string | null;
   estimated_on?: string | null;
+  scheduled_off?: string | null;
+  scheduled_on?: string | null;
   last_position?: {
     latitude: number;
     longitude: number;
@@ -157,6 +234,8 @@ export interface FlightAwareData {
   position: LivePosition | null;
   estimatedOnMs: number | null;
   actualOffMs: number | null;
+  scheduledOffMs: number | null;
+  scheduledOnMs: number | null;
 }
 
 export async function fetchFlightAware(flightInput: string): Promise<FlightAwareData | null> {
@@ -204,6 +283,8 @@ export async function fetchFlightAware(flightInput: string): Promise<FlightAware
       position,
       estimatedOnMs: flight.estimated_on ? Date.parse(flight.estimated_on) : null,
       actualOffMs: flight.actual_off ? Date.parse(flight.actual_off) : null,
+      scheduledOffMs: flight.scheduled_off ? Date.parse(flight.scheduled_off) : null,
+      scheduledOnMs: flight.scheduled_on ? Date.parse(flight.scheduled_on) : null,
     };
   } catch {
     return null;

@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import AirportInput from "./AirportInput";
+import FlightLookup, { RouteLookupResult } from "./FlightLookup";
 import {
   fmtDay,
   fmtDayTime,
@@ -104,8 +105,15 @@ export default function ExactTab() {
     }
   }
 
+  function applyRoute(r: RouteLookupResult) {
+    setFrom(r.from.iata);
+    setTo(r.to.iata);
+    if (r.durationMinutes) setDuration(String(r.durationMinutes));
+  }
+
   return (
     <div>
+      <FlightLookup onRoute={applyRoute} />
       <form
         onSubmit={generate}
         className="no-print grid grid-cols-2 gap-4 rounded-lg border border-gray-200 bg-gray-50 p-4 sm:grid-cols-3 lg:grid-cols-5"
