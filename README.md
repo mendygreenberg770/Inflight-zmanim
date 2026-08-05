@@ -77,6 +77,36 @@ npx tsx scripts/verify-zmanim.ts   # verify solar engine vs kosher-zmanim
 
 Deploys anywhere Next.js runs (e.g. Vercel).
 
+## Deploying to Cloudflare
+
+The repo is configured for Cloudflare Workers via
+[@opennextjs/cloudflare](https://opennext.js.org/cloudflare) (`wrangler.jsonc`
++ `open-next.config.ts` — a stock `next build` alone won't run on Cloudflare).
+
+**One-time deploy from your machine:**
+
+```bash
+npm install
+npx wrangler login          # opens browser to authorize your Cloudflare account
+npm run deploy              # builds with OpenNext and deploys the Worker
+```
+
+**Continuous deploys from GitHub** (Cloudflare dashboard → Workers & Pages →
+Create → Workers → Import a repository):
+
+- Build command: `npx opennextjs-cloudflare build`
+- Deploy command: `npx opennextjs-cloudflare deploy`
+
+**Local test in the Workers runtime:** `npm run preview`
+
+**Optional FlightAware key:** `npx wrangler secret put FLIGHTAWARE_API_KEY`
+
+> ⚠️ **Plan requirement:** chart generation uses ~1–2 s of CPU per request,
+> and the exact/live endpoints ~0.1 s. The Workers **Free** plan allows only
+> 10 ms CPU per request, so requests will be terminated (error 1102). Use the
+> **Workers Paid** plan ($5/mo, 30 s CPU limit) — or deploy to Vercel, where
+> the default limits are sufficient.
+
 ## Disclaimer
 
 In-flight zmanim are approximations based on projected great-circle routes.

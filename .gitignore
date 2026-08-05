@@ -9,3 +9,8 @@ npm-debug.log*
 !.env.example
 *.tsbuildinfo
 next-env.d.ts
+
+# Cloudflare / OpenNext
+/.open-next/
+/.wrangler/
+.dev.vars
