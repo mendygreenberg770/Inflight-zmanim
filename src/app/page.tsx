@@ -60,6 +60,15 @@ export default function Home() {
           distance yourself from the zmanim boundaries as much as possible, and consult a
           Rov for practical halacha. Not affiliated with MyZmanim.
         </p>
+        {process.env.NEXT_PUBLIC_BUILD_TIME && (
+          <p className="mt-2" suppressHydrationWarning>
+            Build:{" "}
+            {new Date(process.env.NEXT_PUBLIC_BUILD_TIME).toLocaleString("en-US", {
+              dateStyle: "medium",
+              timeStyle: "short",
+            })}
+          </p>
+        )}
       </footer>
     </main>
   );
