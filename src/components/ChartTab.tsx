@@ -122,7 +122,7 @@ export default function ChartTab() {
       <FlightLookup onRoute={applyRoute} />
       <form
         onSubmit={generate}
-        className="no-print grid grid-cols-2 gap-4 rounded-lg border border-gray-200 bg-gray-50 p-4 sm:grid-cols-3 lg:grid-cols-6"
+        className="no-print grid grid-cols-2 gap-4 rounded-lg border border-gray-200 bg-gray-50 p-4 sm:grid-cols-3 lg:grid-cols-5"
       >
         <AirportInput label="From" value={from} onChange={setFrom} placeholder="EWR" />
         <AirportInput label="To" value={to} onChange={setTo} placeholder="TLV" />
@@ -162,21 +162,7 @@ export default function ChartTab() {
             <option value={360}>6 hours</option>
           </select>
         </label>
-        <label className="block">
-          <span className="block text-sm font-medium text-gray-700">
-            Flight time <span className="font-normal text-gray-500">(min, blank = auto)</span>
-          </span>
-          <input
-            type="number"
-            value={duration}
-            onChange={(e) => setDuration(e.target.value)}
-            placeholder="auto"
-            min={31}
-            max={1499}
-            className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
-          />
-        </label>
-        <div className="col-span-2 flex flex-wrap items-center gap-4 sm:col-span-3 lg:col-span-6">
+        <div className="col-span-2 flex flex-wrap items-center gap-4 sm:col-span-3 lg:col-span-5">
           <label className="flex items-center gap-2 text-sm text-gray-700">
             <input
               type="checkbox"

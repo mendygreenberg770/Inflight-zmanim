@@ -99,6 +99,12 @@ Create → Workers → Import a repository):
 
 **Local test in the Workers runtime:** `npm run preview`
 
+**Why Workers and not Cloudflare Pages?** Pages' Next.js adapter
+(`@cloudflare/next-on-pages`) is deprecated and does not support Next 16;
+Cloudflare's supported path for Next.js is Workers + OpenNext. Git-push
+deploys work on Workers too (worker → Settings → Builds → connect the repo),
+and custom domains can be attached under Settings → Domains & Routes.
+
 **Optional FlightAware key:** `npx wrangler secret put FLIGHTAWARE_API_KEY`
 
 > ⚠️ **Plan requirement:** chart generation uses ~1–2 s of CPU per request,
