@@ -118,6 +118,23 @@ Cloudflare's supported path for Next.js is Workers + OpenNext. Git-push
 deploys work on Workers too (worker → Settings → Builds → connect the repo),
 and custom domains can be attached under Settings → Domains & Routes.
 
+**Deploying to Pages anyway (`*.pages.dev`):** the repo can package the
+OpenNext build as a Pages "advanced mode" deployment (`_worker.js` + static
+assets) — verified working in the local Pages runtime, but note this pairing
+is not officially supported by OpenNext:
+
+```bash
+npx wrangler pages project create inflight-zmanim --production-branch=main   # once
+npm run deploy:pages    # → https://inflight-zmanim.pages.dev
+```
+
+If API routes return errors after the first deploy, set the project's
+compatibility settings once in the dashboard (Pages project → Settings →
+Runtime): compatibility date `2025-03-25`, compatibility flag `nodejs_compat`
+— then run `npm run deploy:pages` again. Set `FLIGHTAWARE_API_KEY` /
+`ROUTE_LOOKUP_PROXY` under Settings → Environment variables if needed
+(FR24 works directly from Cloudflare, so the proxy is not needed there).
+
 **Optional FlightAware key:** `npx wrangler secret put FLIGHTAWARE_API_KEY`
 
 > ⚠️ **Plan requirement:** chart generation uses ~1–2 s of CPU per request,
