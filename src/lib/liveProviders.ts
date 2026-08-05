@@ -138,18 +138,14 @@ interface Fr24Flight {
 const fr24Cache = new Map<string, { data: RouteInfo | null; expires: number }>();
 const FR24_CACHE_TTL_MS = 10 * 60_000;
 
-/**
- * FlightRadar24 flight-list lookup: reflects the *current* schedule for a
- * flight number, so it avoids the stale-route problem of community
- * callsign→route databases (airlines reuse flight numbers on new routes).
- */
-export async function fetchRouteFr24(flightInput: string): Promise<RouteInfo | null> {
-  const flightNumber = toIataFlightNumber(flightInput);
-  if (!flightNumber) return null;
+export const BROWSER_HEADERS = {
+  "User-Agent":
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36",
+  Accept: "application/json",
+};
 
-  const cached = fr24Cache.get(flightNumber);
-  if (cached && cached.expires > Date.now()) return cached.data;
-
+/** FR24 flight-list endpoint (richest data, but bot-protected on some networks). */
+async function fr24List(flightNumber: string): Promise<RouteInfo | null> {
   let result: RouteInfo | null = null;
   try {
     const url =
@@ -157,11 +153,7 @@ export async function fetchRouteFr24(flightInput: string): Promise<RouteInfo | n
       encodeURIComponent(flightNumber) +
       "&fetchBy=flight&limit=10";
     const res = await fetch(url, {
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36",
-        Accept: "application/json",
-      },
+      headers: BROWSER_HEADERS,
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
       cache: "no-store",
     });
@@ -205,6 +197,96 @@ export async function fetchRouteFr24(flightInput: string): Promise<RouteInfo | n
   } catch {
     return null;
   }
+  return result;
+}
+
+/**
+ * FR24 web-search endpoint — a fallback served from a different edge than the
+ * list API, so it sometimes works where list.json is bot-blocked. Entries look
+ * like { type: "live"|"schedule", detail: { flight, callsign, schd_from,
+ * schd_to, route: "Newark (EWR) ⟶ Brussels (BRU)" } }.
+ */
+async function fr24Find(flightNumber: string): Promise<RouteInfo | null> {
+  try {
+    const url =
+      "https://www.flightradar24.com/v1/search/web/find?query=" +
+      encodeURIComponent(flightNumber) +
+      "&limit=15";
+    const res = await fetch(url, {
+      headers: BROWSER_HEADERS,
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      cache: "no-store",
+    });
+    if (!res.ok) return null;
+    const json = (await res.json()) as {
+      results?: {
+        type?: string;
+        detail?: {
+          flight?: string | null;
+          callsign?: string | null;
+          schd_from?: string | null;
+          schd_to?: string | null;
+          route?: string | null;
+        } | null;
+      }[];
+    };
+    const results = Array.isArray(json?.results) ? json.results : [];
+    const matches = results.filter(
+      (r) => (r?.detail?.flight ?? "").toUpperCase() === flightNumber
+    );
+    const pick =
+      matches.find((r) => r?.type === "live") ??
+      matches.find((r) => r?.type === "schedule") ??
+      matches[0];
+    if (!pick?.detail) return null;
+
+    // schd_from/schd_to may be IATA (3 chars) or ICAO (4); the route string
+    // "City (AAA) ⟶ City (BBB)" is a last-resort source of IATA codes.
+    const codes = { originIata: "", originIcao: "", destIata: "", destIcao: "" };
+    const assign = (code: string | null | undefined, side: "origin" | "dest") => {
+      const c = (code ?? "").toUpperCase();
+      if (/^[A-Z]{3}$/.test(c)) codes[`${side}Iata`] = c;
+      else if (/^[A-Z0-9]{4}$/.test(c)) codes[`${side}Icao`] = c;
+    };
+    assign(pick.detail.schd_from, "origin");
+    assign(pick.detail.schd_to, "dest");
+    if (!codes.originIata && !codes.originIcao) {
+      const m = [...(pick.detail.route ?? "").matchAll(/\(([A-Z]{3})\)/g)];
+      if (m.length >= 2) {
+        codes.originIata = m[0][1];
+        codes.destIata = m[m.length - 1][1];
+      }
+    }
+    if ((!codes.originIata && !codes.originIcao) || (!codes.destIata && !codes.destIcao)) {
+      return null;
+    }
+    return {
+      originIata: codes.originIata || undefined,
+      originIcao: codes.originIcao || undefined,
+      destIata: codes.destIata || undefined,
+      destIcao: codes.destIcao || undefined,
+      source: "flightradar24-search",
+      live: pick.type === "live",
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * FlightRadar24 flight-number lookup: reflects the *current* schedule, so it
+ * avoids the stale-route problem of community callsign→route databases
+ * (airlines reuse flight numbers on new routes). Tries the list API first,
+ * then the search API.
+ */
+export async function fetchRouteFr24(flightInput: string): Promise<RouteInfo | null> {
+  const flightNumber = toIataFlightNumber(flightInput);
+  if (!flightNumber) return null;
+
+  const cached = fr24Cache.get(flightNumber);
+  if (cached && cached.expires > Date.now()) return cached.data;
+
+  const result = (await fr24List(flightNumber)) ?? (await fr24Find(flightNumber));
 
   fr24Cache.set(flightNumber, { data: result, expires: Date.now() + FR24_CACHE_TTL_MS });
   return result;
