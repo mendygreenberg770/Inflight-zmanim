@@ -141,7 +141,27 @@ export const AIRLINE_IATA_TO_ICAO: Record<string, string> = Object.fromEntries(
   AIRLINES.map((a) => [a.iata, a.icao])
 );
 
+export const AIRLINE_ICAO_TO_IATA: Record<string, string> = Object.fromEntries(
+  AIRLINES.map((a) => [a.icao, a.iata])
+);
+
 const ICAO_CODES = new Set(AIRLINES.map((a) => a.icao));
+
+/**
+ * Normalize a flight identifier to an IATA-style flight number for schedule
+ * lookups (e.g. FlightRadar24): "UAL994" → "UA994", "UA 994" → "UA994",
+ * "LY008" → "LY8". Unrecognized inputs are returned cleaned but unchanged.
+ */
+export function toIataFlightNumber(input: string): string {
+  const raw = input.toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const icaoMatch = raw.match(/^([A-Z]{3})0*([0-9]{1,4}[A-Z]?)$/);
+  if (icaoMatch && AIRLINE_ICAO_TO_IATA[icaoMatch[1]]) {
+    return `${AIRLINE_ICAO_TO_IATA[icaoMatch[1]]}${icaoMatch[2]}`;
+  }
+  const iataMatch = raw.match(/^([A-Z]{2}|[A-Z][0-9]|[0-9][A-Z])0*([0-9]{1,4}[A-Z]?)$/);
+  if (iataMatch) return `${iataMatch[1]}${iataMatch[2]}`;
+  return raw;
+}
 
 /**
  * Normalize a user-typed flight identifier into candidate ADS-B callsigns.

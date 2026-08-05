@@ -11,8 +11,9 @@ function resolveAirport(iata?: string, icao?: string): Airport | undefined {
 /**
  * Route lookup by flight identifier (e.g. "UA84"), used to pre-fill the
  * chart/exact forms. FlightAware (if configured) gives schedule-quality data;
- * otherwise community route databases are used — those can be stale for
- * reused flight numbers, so the client shows the result for confirmation.
+ * otherwise FlightRadar24 (current schedule) is tried, then community route
+ * databases — those can be stale for reused flight numbers, so the client
+ * shows the result for confirmation.
  */
 export async function GET(req: NextRequest) {
   const ident = (req.nextUrl.searchParams.get("ident") ?? "").trim();
@@ -44,12 +45,16 @@ export async function GET(req: NextRequest) {
     const from = resolveAirport(route.originIata, route.originIcao);
     const to = resolveAirport(route.destIata, route.destIcao);
     if (from && to) {
+      const durationMinutes =
+        route.scheduledDepMs && route.scheduledArrMs && route.scheduledArrMs > route.scheduledDepMs
+          ? Math.round((route.scheduledArrMs - route.scheduledDepMs) / 60_000)
+          : null;
       return NextResponse.json({
         from,
         to,
         source: route.source,
-        scheduledOffMs: null,
-        durationMinutes: null,
+        scheduledOffMs: route.scheduledDepMs ?? null,
+        durationMinutes,
       });
     }
   }

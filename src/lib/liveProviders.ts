@@ -2,15 +2,16 @@
  * Live flight data providers.
  *
  * Free, keyless providers (used by default):
- *   - api.adsb.lol        — live ADS-B position by callsign
- *   - api.airplanes.live  — live ADS-B position by callsign (fallback)
- *   - api.adsbdb.com      — callsign → origin/destination route lookup
+ *   - api.flightradar24.com — flight-number → current schedule/route lookup
+ *   - api.adsb.lol          — live ADS-B position by callsign
+ *   - api.airplanes.live    — live ADS-B position by callsign (fallback)
+ *   - api.adsbdb.com        — callsign → origin/destination route lookup
  *
  * Optional (better schedule/route/ETA data), enabled when the env var is set:
  *   - FlightAware AeroAPI — FLIGHTAWARE_API_KEY
  */
 
-import { candidateCallsigns } from "./airlines";
+import { candidateCallsigns, toIataFlightNumber } from "./airlines";
 
 export interface LivePosition {
   callsign: string;
@@ -34,6 +35,12 @@ export interface RouteInfo {
   destIata?: string;
   destIcao?: string;
   source: string;
+  /** Scheduled departure time (ms since epoch), when the source provides it. */
+  scheduledDepMs?: number;
+  /** Scheduled arrival time (ms since epoch), when the source provides it. */
+  scheduledArrMs?: number;
+  /** True when the source reports this flight as currently in the air. */
+  live?: boolean;
 }
 
 const FETCH_TIMEOUT_MS = 8000;
@@ -102,12 +109,113 @@ export async function fetchLivePosition(flightInput: string): Promise<LivePositi
   return null;
 }
 
+// ── FlightRadar24 (keyless schedule lookup) ─────────────────────────────────
+
+/**
+ * Loose shape of an entry in FR24's flight list response. Different
+ * deployments have returned slightly different nesting, so every access
+ * below goes through optional chaining.
+ */
+interface Fr24Flight {
+  identification?: {
+    number?: { default?: string | null };
+    callsign?: string | null;
+  };
+  status?: {
+    live?: boolean;
+    generic?: { status?: { text?: string } };
+  };
+  airport?: {
+    origin?: { code?: { iata?: string; icao?: string } } | null;
+    destination?: { code?: { iata?: string; icao?: string } } | null;
+  };
+  time?: {
+    scheduled?: { departure?: number | null; arrival?: number | null };
+    real?: { departure?: number | null; arrival?: number | null };
+  };
+}
+
+const fr24Cache = new Map<string, { data: RouteInfo | null; expires: number }>();
+const FR24_CACHE_TTL_MS = 10 * 60_000;
+
+/**
+ * FlightRadar24 flight-list lookup: reflects the *current* schedule for a
+ * flight number, so it avoids the stale-route problem of community
+ * callsign→route databases (airlines reuse flight numbers on new routes).
+ */
+export async function fetchRouteFr24(flightInput: string): Promise<RouteInfo | null> {
+  const flightNumber = toIataFlightNumber(flightInput);
+  if (!flightNumber) return null;
+
+  const cached = fr24Cache.get(flightNumber);
+  if (cached && cached.expires > Date.now()) return cached.data;
+
+  let result: RouteInfo | null = null;
+  try {
+    const url =
+      "https://api.flightradar24.com/common/v1/flight/list.json?query=" +
+      encodeURIComponent(flightNumber) +
+      "&fetchBy=flight&limit=10";
+    const res = await fetch(url, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36",
+        Accept: "application/json",
+      },
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      cache: "no-store",
+    });
+    if (res.ok) {
+      const json = (await res.json()) as {
+        result?: { response?: { data?: Fr24Flight[] | null } };
+      };
+      const data = json?.result?.response?.data;
+      const flights = (Array.isArray(data) ? data : []).filter((f) => {
+        const o = f?.airport?.origin?.code;
+        const d = f?.airport?.destination?.code;
+        return Boolean((o?.iata || o?.icao) && (d?.iata || d?.icao));
+      });
+
+      // Prefer the flight currently in the air; else the next scheduled
+      // departure (allowing 6h of slack for delays); else the most recent
+      // entry that has both airports.
+      const nowSec = Date.now() / 1000;
+      const upcoming = flights
+        .filter((f) => (f?.time?.scheduled?.departure ?? 0) >= nowSec - 6 * 3600)
+        .sort(
+          (a, b) => (a?.time?.scheduled?.departure ?? Infinity) - (b?.time?.scheduled?.departure ?? Infinity)
+        );
+      const flight = flights.find((f) => f?.status?.live === true) ?? upcoming[0] ?? flights[0];
+
+      if (flight) {
+        const dep = flight?.time?.scheduled?.departure;
+        const arr = flight?.time?.scheduled?.arrival;
+        result = {
+          originIata: flight?.airport?.origin?.code?.iata,
+          originIcao: flight?.airport?.origin?.code?.icao,
+          destIata: flight?.airport?.destination?.code?.iata,
+          destIcao: flight?.airport?.destination?.code?.icao,
+          source: "flightradar24",
+          scheduledDepMs: typeof dep === "number" ? dep * 1000 : undefined,
+          scheduledArrMs: typeof arr === "number" ? arr * 1000 : undefined,
+          live: flight?.status?.live === true,
+        };
+      }
+    }
+  } catch {
+    return null;
+  }
+
+  fr24Cache.set(flightNumber, { data: result, expires: Date.now() + FR24_CACHE_TTL_MS });
+  return result;
+}
+
 interface AdsbdbAirport {
   iata_code?: string;
   icao_code?: string;
 }
 
-async function fetchRouteAdsbdb(flightInput: string): Promise<RouteInfo | null> {
+export async function fetchRouteAdsbdb(flightInput: string): Promise<RouteInfo | null> {
   for (const cs of candidateCallsigns(flightInput)) {
     try {
       const data = (await getJson(`https://api.adsbdb.com/v0/callsign/${cs}`)) as {
@@ -138,7 +246,7 @@ async function fetchRouteAdsbdb(flightInput: string): Promise<RouteInfo | null> 
  * Community data (same upstream family as adsbdb) but with the extra sanity
  * signal, so it's preferred when the aircraft is airborne.
  */
-async function fetchRouteset(
+export async function fetchRouteset(
   flightInput: string,
   pos?: { lat: number; lon: number }
 ): Promise<(RouteInfo & { plausible: boolean | null }) | null> {
@@ -189,15 +297,21 @@ async function fetchRouteset(
 }
 
 /**
- * Best-effort route lookup. With a live position, prefers the routeset API
- * (which can flag implausible routes); otherwise falls back to adsbdb.
- * Community flight-number databases are often stale for reused flight
- * numbers, so callers should still sanity-check against the live position.
+ * Best-effort route lookup. FlightRadar24 is tried first because it reflects
+ * the *current* schedule for the flight number — community callsign→route
+ * databases (adsb.lol routeset, adsbdb) go stale when airlines reuse flight
+ * numbers on new routes. The routeset API is next (with a live position it
+ * can flag implausible routes), then adsbdb, with an implausible routeset
+ * answer kept only as a last resort. Callers should still sanity-check the
+ * result against the live position.
  */
 export async function fetchRoute(
   flightInput: string,
   pos?: { lat: number; lon: number }
 ): Promise<(RouteInfo & { plausible?: boolean | null }) | null> {
+  const fr24 = await fetchRouteFr24(flightInput);
+  if (fr24) return fr24;
+
   const routeset = await fetchRouteset(flightInput, pos);
   // A routeset answer flagged implausible for the current position is worse
   // than trying another source; only accept it as a last resort.
