@@ -5,12 +5,11 @@ import AirportInput from "./AirportInput";
 import FlightLookup, { RouteLookupResult } from "./FlightLookup";
 import {
   fmtDay,
-  fmtDayTime,
   fmtDurationMinutes,
   fmtLongDate,
   fmtTime,
 } from "@/lib/format";
-import { ZMAN_DEFS, ZmanKey } from "@/lib/zmanim";
+import { ROW_DEFS, RowKey, ZMAN_DEFS, ZmanKey } from "@/lib/zmanim";
 
 interface Airport {
   iata: string;
@@ -20,7 +19,7 @@ interface Airport {
 }
 
 interface ExactCrossing {
-  zman: ZmanKey;
+  key: RowKey;
   nominalMs: number;
   earliestMs: number;
   latestMs: number;
@@ -40,13 +39,13 @@ interface ExactData {
     durationMs: number;
     durationEstimated: boolean;
     zmanim: ZmanKey[];
-    arctic: { enter: number | null; exit: number | null } | null;
+    pathSource: { type: "historical" | "greatCircle"; count: number; flight?: string };
   };
   crossings: ExactCrossing[];
   landing: { nominalMs: number; earliestMs: number; latestMs: number };
 }
 
-const ZMAN_BY_KEY = Object.fromEntries(ZMAN_DEFS.map((z) => [z.key, z]));
+const ROW_BY_KEY = Object.fromEntries(ROW_DEFS.map((z) => [z.key, z]));
 
 function todayISO(): string {
   const d = new Date();
@@ -67,6 +66,7 @@ export default function ExactTab() {
   const [date, setDate] = useState(todayISO());
   const [takeoff, setTakeoff] = useState("18:42");
   const [duration, setDuration] = useState(""); // minutes, blank = auto
+  const [flightIdent, setFlightIdent] = useState("");
   const [includeRT, setIncludeRT] = useState(true);
   const [includeMK, setIncludeMK] = useState(false);
 
@@ -92,6 +92,7 @@ export default function ExactTab() {
         zmanim: zmanim.join(","),
       });
       if (duration) params.set("durationMinutes", duration);
+      if (flightIdent) params.set("flight", flightIdent);
       const res = await fetch(`/api/exact?${params}`);
       const json = await res.json();
       if (!res.ok) throw new Error(json.error ?? "Request failed");
@@ -108,6 +109,7 @@ export default function ExactTab() {
   function applyRoute(r: RouteLookupResult) {
     setFrom(r.from.iata);
     setTo(r.to.iata);
+    setFlightIdent(r.ident);
     if (r.durationMinutes) setDuration(String(r.durationMinutes));
   }
 
@@ -236,17 +238,26 @@ function ExactResult({ data }: { data: ExactData }) {
             Flight time used: {fmtDurationMinutes(meta.durationMs / 60_000)}
             {meta.durationEstimated ? " (estimated)" : ""}
           </p>
+          <p
+            className={
+              meta.pathSource.type === "historical"
+                ? "font-medium text-green-800"
+                : "text-amber-700"
+            }
+          >
+            {meta.pathSource.type === "historical"
+              ? `Based on ${meta.pathSource.count} recent actual flightpaths of ${meta.pathSource.flight}`
+              : "Based on a great-circle route estimate (no recent flightpath data)"}
+          </p>
           <p className="font-semibold">All times are in {meta.from.city} time.</p>
           {meta.dst && <p>Daylight saving time</p>}
         </div>
       </div>
 
-      {meta.arctic?.enter != null && (
+      {crossings.some((c) => c.key === "arcticEnter" || c.key === "arcticExit") && (
         <p className="mt-3 rounded-md bg-amber-50 px-4 py-3 text-sm text-amber-800">
-          ⚠️ This route passes through the Arctic circle (approx.{" "}
-          {fmtDayTime(meta.arctic.enter, tz)}
-          {meta.arctic.exit != null && ` — ${fmtDayTime(meta.arctic.exit, tz)}`}). Zmanim in
-          the Arctic involve serious halachic questions — consult a Rov.
+          ⚠️ This route passes through the Arctic circle — see the Enter/Exit Arctic rows.
+          Zmanim in the Arctic involve serious halachic questions — consult a Rov.
         </p>
       )}
 
@@ -266,11 +277,11 @@ function ExactResult({ data }: { data: ExactData }) {
           </thead>
           <tbody>
             {crossings.map((c, i) => {
-              const def = ZMAN_BY_KEY[c.zman];
+              const def = ROW_BY_KEY[c.key];
               return (
-                <tr key={`${c.zman}-${i}`} className="border-b border-gray-100">
+                <tr key={`${c.key}-${i}`} className="border-b border-gray-100">
                   <td className="py-2 pr-4">
-                    <span className="font-medium">{def?.label ?? c.zman}</span>{" "}
+                    <span className="font-medium">{def?.label ?? c.key}</span>{" "}
                     <span className="text-gray-500" dir="rtl">
                       {def?.hebrew}
                     </span>
@@ -305,11 +316,13 @@ function ExactResult({ data }: { data: ExactData }) {
 
       <div className="mt-6 max-w-4xl space-y-2 text-xs leading-relaxed text-gray-600">
         <p>
-          “Expected” is the best single estimate, assuming a great-circle route flown at the
-          nominal flight time. The window shows how much the time shifts if the flight runs
-          ±6% faster or slower — <strong>use the more stringent end l&rsquo;chumra</strong>.
-          “Into flight” is elapsed time after takeoff, so you can follow along with the
-          aircraft clock without changing your watch.
+          “Expected” is the best single estimate —{" "}
+          {meta.pathSource.type === "historical"
+            ? `computed along the median of ${meta.pathSource.count} recent actual flightpaths of ${meta.pathSource.flight}, with the window spanning all of them`
+            : "assuming a great-circle route at the nominal flight time, with the window covering ±6% speed variation"}{" "}
+          — <strong>use the more stringent end l&rsquo;chumra</strong>. “Into flight” is
+          elapsed time after takeoff, so you can follow along with the aircraft clock
+          without changing your watch.
         </p>
         <p>
           For live-position-based times once airborne (Wi-Fi required), use the Live

@@ -15,6 +15,8 @@ export interface RouteLookupResult {
   source: string;
   scheduledOffMs: number | null;
   durationMinutes: number | null;
+  /** The flight identifier that was looked up, e.g. "UA994". */
+  ident: string;
 }
 
 const SORTED_AIRLINES = [...AIRLINES].sort((a, b) => a.name.localeCompare(b.name));
@@ -42,8 +44,9 @@ export default function FlightLookup({
       const res = await fetch(`/api/route?ident=${encodeURIComponent(ident)}`);
       const json = await res.json();
       if (!res.ok) throw new Error(json.message ?? json.error ?? "Lookup failed");
-      setFound(json);
-      onRoute(json);
+      const result = { ...json, ident };
+      setFound(result);
+      onRoute(result);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {

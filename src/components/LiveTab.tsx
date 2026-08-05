@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import AirportInput from "./AirportInput";
 import { AIRLINES } from "@/lib/airlines";
 import { fmtDayTime, fmtRelative, fmtTime } from "@/lib/format";
-import { ZMAN_DEFS, ZmanKey } from "@/lib/zmanim";
+import { ROW_DEFS, RowKey } from "@/lib/zmanim";
 
 const SORTED_AIRLINES = [...AIRLINES].sort((a, b) => a.name.localeCompare(b.name));
 
@@ -41,7 +41,7 @@ interface LiveData {
   etaMs: number | null;
   remainingKm: number | null;
   sunElevationNow: number;
-  crossings: { zman: ZmanKey; earliestMs: number; nominalMs: number; latestMs: number }[];
+  crossings: { key: RowKey; earliestMs: number; nominalMs: number; latestMs: number }[];
   timeline: { t: number; elev: number; lat: number; lon: number }[];
 }
 
@@ -51,7 +51,7 @@ interface LiveError {
   route?: { from: Airport | null; to: Airport | null } | null;
 }
 
-const ZMAN_BY_KEY = Object.fromEntries(ZMAN_DEFS.map((z) => [z.key, z]));
+const ROW_BY_KEY = Object.fromEntries(ROW_DEFS.map((z) => [z.key, z]));
 
 export default function LiveTab() {
   const [airline, setAirline] = useState("UA");
@@ -348,18 +348,18 @@ export default function LiveTab() {
                 </thead>
                 <tbody>
                   {data.crossings.map((c, i) => {
-                    const def = ZMAN_BY_KEY[c.zman];
+                    const def = ROW_BY_KEY[c.key];
                     const passed = c.nominalMs < nowMs;
                     return (
                       <tr
-                        key={`${c.zman}-${i}`}
+                        key={`${c.key}-${i}`}
                         className={
                           "border-b border-gray-100 " +
                           (passed ? "text-gray-400" : "text-gray-900")
                         }
                       >
                         <td className="py-1.5 pr-4">
-                          <span className="font-medium">{def?.label ?? c.zman}</span>{" "}
+                          <span className="font-medium">{def?.label ?? c.key}</span>{" "}
                           <span className="text-gray-500" dir="rtl">
                             {def?.hebrew}
                           </span>
@@ -500,10 +500,10 @@ function SunTimeline({
           {crossings
             .filter((c) => c.nominalMs >= t0 && c.nominalMs <= t1)
             .map((c, i) => {
-              const def = ZMAN_BY_KEY[c.zman];
+              const def = ROW_BY_KEY[c.key];
               const cx = x(c.nominalMs);
               return (
-                <g key={`${c.zman}-${i}`}>
+                <g key={`${c.key}-${i}`}>
                   <line x1={cx} x2={cx} y1={PAD.t} y2={H - PAD.b} stroke="#2563eb" strokeWidth={1} />
                   <circle cx={cx} cy={PAD.t + 8 + (i % 3) * 14} r={2.5} fill="#2563eb" />
                   <text
@@ -513,7 +513,7 @@ function SunTimeline({
                     fill="#1d4ed8"
                     fontWeight={600}
                   >
-                    {def?.label ?? c.zman}
+                    {def?.label ?? c.key}
                   </text>
                 </g>
               );

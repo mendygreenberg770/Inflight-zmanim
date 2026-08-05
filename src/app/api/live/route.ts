@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Airport, findAirport } from "@/lib/airports";
-import { scenarioCrossings, Scenario } from "@/lib/flightEngine";
+import { gcPath, pathEvents, scenarioCrossings, Scenario } from "@/lib/flightEngine";
 import {
   crossTrackKm,
   gcDestination,
@@ -17,7 +17,7 @@ import {
   RouteInfo,
 } from "@/lib/liveProviders";
 import { solarElevation } from "@/lib/solar";
-import { DEFAULT_ZMANIM, ZmanKey } from "@/lib/zmanim";
+import { DEFAULT_ZMANIM, RowKey, ZmanKey } from "@/lib/zmanim";
 
 export const dynamic = "force-dynamic";
 
@@ -28,7 +28,7 @@ function resolveAirport(iata?: string, icao?: string): Airport | undefined {
 }
 
 interface LiveCrossing {
-  zman: ZmanKey;
+  key: RowKey;
   earliestMs: number;
   nominalMs: number;
   latestMs: number;
@@ -168,31 +168,37 @@ export async function GET(req: NextRequest) {
   }
   const etaMs = now + remainingMs;
 
-  // 3. Zman crossings ahead, with a ±7% speed envelope
+  // 3. Zman crossings + date-line/Arctic events ahead, with a ±7% speed envelope
   const mkScenario = (duration: number): Scenario => ({
     takeoffMs: now,
-    durationMs: Math.max(60_000, Math.round(duration)),
-    from: pos,
-    to: target,
+    path: gcPath(pos, target, Math.max(60_000, Math.round(duration))),
   });
-  const scenarios = [remainingMs / 1.07, remainingMs, remainingMs * 1.07].map((d) =>
-    scenarioCrossings(mkScenario(d), LIVE_ZMANIM)
-  );
+  const scenarios = [remainingMs / 1.07, remainingMs, remainingMs * 1.07].map((d) => {
+    const s = mkScenario(d);
+    return [...scenarioCrossings(s, LIVE_ZMANIM), ...pathEvents(s)];
+  });
 
+  const allKeys: RowKey[] = [
+    ...LIVE_ZMANIM,
+    "arcticEnter",
+    "arcticExit",
+    "dateLineEast",
+    "dateLineWest",
+  ];
   const crossings: LiveCrossing[] = [];
-  for (const zman of LIVE_ZMANIM) {
-    const nominalTimes = scenarios[1].filter((c) => c.zman === zman).map((c) => c.timeMs);
+  for (const key of allKeys) {
+    const nominalTimes = scenarios[1].filter((c) => c.key === key).map((c) => c.timeMs);
     for (const nominal of nominalTimes) {
-      const nearBy = (list: { zman: ZmanKey; timeMs: number }[]) => {
+      const nearBy = (list: { key: RowKey; timeMs: number }[]) => {
         const times = list
-          .filter((c) => c.zman === zman)
+          .filter((c) => c.key === key)
           .map((c) => c.timeMs)
           .filter((t) => Math.abs(t - nominal) < 3 * 3600_000);
         return times.length ? times : [nominal];
       };
       const all = [...nearBy(scenarios[0]), nominal, ...nearBy(scenarios[2])];
       crossings.push({
-        zman,
+        key,
         earliestMs: Math.min(...all),
         nominalMs: nominal,
         latestMs: Math.max(...all),
