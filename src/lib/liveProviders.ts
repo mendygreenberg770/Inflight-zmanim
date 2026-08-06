@@ -133,6 +133,7 @@ interface Fr24Flight {
   time?: {
     scheduled?: { departure?: number | null; arrival?: number | null };
     real?: { departure?: number | null; arrival?: number | null };
+    estimated?: { departure?: number | null; arrival?: number | null };
   };
 }
 
@@ -373,6 +374,7 @@ interface Fr24PlaybackPoint {
   longitude?: number;
   altitude?: { feet?: number };
   speed?: { kts?: number };
+  heading?: number;
   timestamp?: number;
 }
 
@@ -420,7 +422,7 @@ function normalizeTrack(points: Fr24PlaybackPoint[], label: string): RecordedTra
   return { label, durationMs, points: pts };
 }
 
-async function fr24Playback(flightId: string, label: string): Promise<RecordedTrack | null> {
+async function fr24PlaybackRaw(flightId: string): Promise<Fr24PlaybackPoint[] | null> {
   try {
     const res = await fetch(
       `https://api.flightradar24.com/common/v1/flight-playback.json?flightId=${encodeURIComponent(flightId)}`,
@@ -437,11 +439,96 @@ async function fr24Playback(flightId: string, label: string): Promise<RecordedTr
       };
     };
     const track = json?.result?.response?.data?.flight?.track;
-    if (!Array.isArray(track)) return null;
-    return normalizeTrack(track, label);
+    return Array.isArray(track) ? track : null;
   } catch {
     return null;
   }
+}
+
+async function fr24Playback(flightId: string, label: string): Promise<RecordedTrack | null> {
+  const track = await fr24PlaybackRaw(flightId);
+  return track ? normalizeTrack(track, label) : null;
+}
+
+// ── FlightRadar24 live position (satellite coverage over oceans) ─────────────
+
+export interface Fr24LiveInfo {
+  position: LivePosition | null;
+  /** Actual departure (wheels-up) time, ms. */
+  depMs: number | null;
+  /** Estimated arrival time, ms. */
+  arrEstMs: number | null;
+}
+
+/**
+ * Live position from FlightRadar24 — its feed includes satellite ADS-B, so it
+ * covers oceanic segments where ground-receiver networks (adsb.lol,
+ * airplanes.live) see nothing. Also returns the live leg's actual departure
+ * time so the caller can dead-reckon when even FR24 has no recent fix.
+ * Relays through ROUTE_LOOKUP_PROXY when FR24 is blocked on this host.
+ */
+export async function fetchFr24Live(
+  flightInput: string,
+  opts?: { noProxy?: boolean }
+): Promise<Fr24LiveInfo | null> {
+  const flightNumber = toIataFlightNumber(flightInput);
+  if (!flightNumber) return null;
+
+  const list = await fr24ListRaw(flightNumber);
+  if (list) {
+    const live = list.find((f) => f?.status?.live === true && f?.identification?.id);
+    if (live) {
+      const dep = live.time?.real?.departure;
+      const arrEst = live.time?.estimated?.arrival ?? live.time?.scheduled?.arrival;
+      let position: LivePosition | null = null;
+
+      const track = await fr24PlaybackRaw(live.identification!.id as string);
+      const last = track?.filter(
+        (p) =>
+          typeof p.latitude === "number" &&
+          typeof p.longitude === "number" &&
+          typeof p.timestamp === "number"
+      ).at(-1);
+      if (last) {
+        position = {
+          callsign: live.identification?.callsign ?? flightNumber,
+          lat: last.latitude as number,
+          lon: last.longitude as number,
+          altitude: last.altitude?.feet ?? null,
+          groundSpeedKt: last.speed?.kts ?? null,
+          track: last.heading ?? null,
+          source: "flightradar24",
+          timestampMs: (last.timestamp as number) * 1000,
+        };
+      }
+      return {
+        position,
+        depMs: typeof dep === "number" ? dep * 1000 : null,
+        arrEstMs: typeof arrEst === "number" ? arrEst * 1000 : null,
+      };
+    }
+    return null; // list reachable but no live leg — the flight isn't airborne per FR24
+  }
+
+  // FR24 blocked here — relay through a sibling deployment
+  if (!opts?.noProxy) {
+    const base = process.env.ROUTE_LOOKUP_PROXY?.replace(/\/+$/, "");
+    if (base) {
+      try {
+        const res = await fetch(
+          `${base}/api/position?ident=${encodeURIComponent(flightNumber)}&proxied=1`,
+          { signal: AbortSignal.timeout(15_000), cache: "no-store" }
+        );
+        if (res.ok) {
+          const j = (await res.json()) as Fr24LiveInfo | null;
+          if (j && (j.position || j.depMs)) return j;
+        }
+      } catch {
+        // fall through
+      }
+    }
+  }
+  return null;
 }
 
 const codeMatches = (codes: string[] | undefined, iata?: string, icao?: string) =>

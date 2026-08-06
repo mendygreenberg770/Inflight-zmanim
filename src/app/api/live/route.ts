@@ -1,6 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Airport, findAirport } from "@/lib/airports";
-import { gcPath, pathEvents, scenarioCrossings, Scenario } from "@/lib/flightEngine";
+import {
+  estimateDurationMs,
+  gcPath,
+  pathEvents,
+  positionAt,
+  scenarioCrossings,
+  Scenario,
+} from "@/lib/flightEngine";
 import {
   crossTrackKm,
   gcDestination,
@@ -11,7 +18,9 @@ import {
 } from "@/lib/greatCircle";
 import {
   fetchFlightAware,
+  fetchFr24Live,
   fetchLivePosition,
+  fetchRecentTracks,
   fetchRoute,
   LivePosition,
   RouteInfo,
@@ -87,6 +96,15 @@ export async function GET(req: NextRequest) {
     }
   }
 
+  // 2. Ground ADS-B saw nothing (common mid-ocean): try FlightRadar24's feed,
+  // which includes satellite coverage — and grab the leg's departure time
+  // for dead reckoning in case even that has no recent fix.
+  let fr24Live: Awaited<ReturnType<typeof fetchFr24Live>> = null;
+  if (!position && !p.get("sim")) {
+    fr24Live = await fetchFr24Live(flight);
+    if (fr24Live?.position) position = fr24Live.position;
+  }
+
   // Manual overrides always win
   const fromOverride = p.get("from");
   const destOverride = p.get("to");
@@ -100,11 +118,48 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: `Unknown airport code "${destOverride}"` }, { status: 400 });
   }
 
+  // 3. Dead reckoning: the flight is airborne (FR24 confirmed a departure)
+  // but no source has a position fix. Estimate it from elapsed time along the
+  // usual flightpath — clearly labeled, so the user knows it's an estimate.
+  let positionEstimated = false;
+  if (!position && fr24Live?.depMs && origin && dest) {
+    const originLL = { lat: origin.lat, lon: origin.lon };
+    const destLL = { lat: dest.lat, lon: dest.lon };
+    const tracks = await fetchRecentTracks(flight, {
+      fromCodes: [origin.iata, origin.icao],
+      toCodes: [dest.iata, dest.icao],
+    });
+    const sorted = [...tracks].sort((a, b) => a.durationMs - b.durationMs);
+    const median = sorted[Math.floor(sorted.length / 2)];
+    const path = median ?? gcPath(originLL, destLL, estimateDurationMs(originLL, destLL));
+
+    const durationMs =
+      fr24Live.arrEstMs && fr24Live.arrEstMs > fr24Live.depMs
+        ? fr24Live.arrEstMs - fr24Live.depMs
+        : path.durationMs;
+    const frac = Math.min(0.98, Math.max(0.01, (Date.now() - fr24Live.depMs) / durationMs));
+    const est = positionAt(path, frac);
+    const gsEstKt =
+      (gcDistanceKm(originLL, destLL) / (durationMs / 3600_000)) / 1.852;
+
+    position = {
+      callsign: flight,
+      lat: est.lat,
+      lon: est.lon,
+      altitude: 35000,
+      groundSpeedKt: Math.round(Math.max(300, Math.min(600, gsEstKt))),
+      track: null,
+      source: "estimated (dead reckoning)",
+      timestampMs: Date.now(),
+    };
+    positionEstimated = true;
+  }
+
   if (!position) {
     return NextResponse.json({
       error: "no_position",
       message:
-        "No live position found for this flight. It may not be airborne yet, may be out of ADS-B coverage, or the callsign may differ from the flight number.",
+        "No live position found for this flight — checked ground ADS-B networks, FlightRadar24's satellite feed, and departure-time estimation. It may not be airborne yet, or the callsign may differ from the flight number.",
       route: route
         ? {
             from: resolveAirport(route.originIata, route.originIcao) ?? null,
@@ -126,7 +181,8 @@ export async function GET(req: NextRequest) {
   // routes common — better to warn than to compute zmanim toward the wrong city.
   let routeSuspect = false;
   const suspectReasons: string[] = [];
-  if (dest && !destOverride && !p.get("sim")) {
+  // (Skipped for dead-reckoned positions — those are derived from the route.)
+  if (dest && !destOverride && !p.get("sim") && !positionEstimated) {
     const destLL = { lat: dest.lat, lon: dest.lon };
     if (origin) {
       const originLL = { lat: origin.lat, lon: origin.lon };
@@ -229,6 +285,7 @@ export async function GET(req: NextRequest) {
       hex: position.hex ?? null,
       aircraftType: position.aircraftType ?? null,
       source: position.source,
+      positionEstimated,
       positionTimestampMs: position.timestampMs,
       lat: position.lat,
       lon: position.lon,

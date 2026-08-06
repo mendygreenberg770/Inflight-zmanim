@@ -23,6 +23,7 @@ interface LiveData {
     callsign: string;
     aircraftType: string | null;
     source: string;
+    positionEstimated?: boolean;
     positionTimestampMs: number;
     lat: number;
     lon: number;
@@ -284,6 +285,7 @@ export default function LiveTab() {
             <Stat
               label="Position"
               value={`${data.flight.lat.toFixed(2)}°, ${data.flight.lon.toFixed(2)}°`}
+              hint={data.flight.positionEstimated ? "estimated" : `via ${data.flight.source}`}
             />
             <Stat
               label="Altitude"
@@ -312,6 +314,16 @@ export default function LiveTab() {
               hint={data.etaMs ? fmtRelative(data.etaMs, nowMs) : undefined}
             />
           </div>
+
+          {data.flight.positionEstimated && (
+            <p className="rounded-md bg-amber-50 px-4 py-3 text-sm text-amber-800">
+              ✈️ No live coverage right now (common over oceans). The position is{" "}
+              <strong>estimated from the actual departure time</strong> along the usual
+              flightpath, so the zmanim below are correspondingly approximate — use extra
+              stringency near the boundaries. Live data resumes automatically when the
+              aircraft is back in coverage.
+            </p>
+          )}
 
           {data.route.suspect && data.route.suspectMessage && (
             <p className="rounded-md border border-red-300 bg-red-50 px-4 py-3 text-sm font-medium text-red-800">
